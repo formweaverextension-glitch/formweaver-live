@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FormWeaver Admin Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'fv-primary': '#4f46e5',
+                        'fv-secondary': '#8b5cf6',
+                        'fv-success': '#10b981',
+                        'fv-error': '#ef4444',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 sm:p-8 font-sans">
+    <div id="app" class="max-w-4xl mx-auto space-y-8">
+        <header class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-fv-primary">
+            <h1 class="text-3xl font-bold text-gray-800">FormWeaver Admin Access</h1>
+            <p id="auth-status" class="mt-2 text-sm text-gray-600">Connecting to Firebase...</p>
+        </header>
+
+        <!-- License Management Section -->
+        <section id="license-management" class="bg-white p-6 rounded-xl shadow-lg space-y-6">
+            <h2 class="text-2xl font-semibold text-fv-primary border-b pb-2">License Management</h2>
+            <div id="user-info" class="space-y-2 text-sm">
+                <p><strong>User ID (UID):</strong> <span id="uid-display" class="text-gray-600">---</span></p>
+                <p><strong>License Status:</strong> <span id="status-badge" class="font-bold px-2 py-1 rounded-full text-white bg-gray-500">CHECKING</span></p>
+                <p><strong>Expiration:</strong> <span id="expiry-date" class="text-gray-600">---</span></p>
+            </div>
+
+            <div id="admin-panel" class="hidden space-y-4">
+                <h3 class="text-xl font-medium">Grant/Revoke Access</h3>
+                <input type="email" id="target-email" placeholder="Client Email Address" class="w-full p-2 border border-gray-300 rounded-lg focus:ring-fv-primary focus:border-fv-primary">
+                
+                <select id="access-type" class="w-full p-2 border border-gray-300 rounded-lg focus:ring-fv-primary focus:border-fv-primary">
+                    <option value="trial">2-Day Free Trial</option>
+                    <option value="monthly">Monthly Subscription (End of Month)</option>
+                    <option value="permanent">Permanent Access</option>
+                    <option value="revoke">Revoke Access (Set Expired)</option>
+                </select>
+                
+                <button onclick="window.grantAccess()" class="w-full py-2 bg-fv-primary text-white font-semibold rounded-lg hover:bg-fv-secondary transition duration-150 shadow">Update Access</button>
+
+                <p id="link-display" class="pt-4 text-center text-sm break-all">
+                    Master Client Link: <br>
+                    <a href="client-form.html?formId=Client_Contact_Info" id="client-link" class="text-blue-600 hover:underline">Loading...</a>
+                </p>
+                <button onclick="window.copyLink()" class="w-full py-2 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition duration-150">Copy Client Link</button>
+            </div>
+            <p id="admin-message" class="text-sm text-center mt-2">&nbsp;</p>
+        </section>
+
+        <!-- Form Builder Section -->
+        <section id="form-builder" class="bg-white p-6 rounded-xl shadow-lg space-y-4">
+            <h2 class="text-2xl font-semibold text-fv-primary border-b pb-2">Form Blueprint Setup</h2>
+            
+            <input type="text" id="form-name" value="Client Contact Info" readonly class="w-full p-2 border border-gray-300 rounded-lg bg-gray-50">
+            
+            <textarea id="form-fields" class="w-full p-2 border border-gray-300 rounded-lg h-24 focus:ring-fv-primary focus:border-fv-primary">Client Full Name, Email Address, Phone Number</textarea>
+            
+            <button onclick="window.saveFormDefinition()" class="w-full py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition duration-150 shadow">Save Form Definition</button>
+            <p id="form-save-status" class="text-sm text-gray-500"></p>
+        </section>
+
+        <!-- Firebase and Sheets Libraries -->
+        <script type="module">
+            import { initializeApp } from "https.k-proxy.com/firebasejs/11.6.1/firebase-app.js";
+            // *** UPDATED to include Redirect functions ***
+            import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithRedirect, getRedirectResult } from "https.k-proxy.com/firebasejs/11.6.1/firebase-auth.js";
+            import { getFirestore, doc, getDoc, setDoc, Timestamp, collection, getDocs, query, where } from "https.k-proxy.com/firebasejs/11.6.1/firebase-firestore.js";
+            
+            // --- YOUR FIREBASE CONFIG (PRE-INSTALLED) ---
+            const firebaseConfig = {
+              apiKey: "AIzaSyA4EABADom_6PWYgO1usdvE0ChZslmYD0E",
+              authDomain: "formweaver-3d973.firebaseapp.com",
+              projectId: "formweaver-3d973",
+              storageBucket: "formweaver-3d973.firebasestorage.app",
+              messagingSenderId: "353605039501",
+              appId: "1:353605039501:web:4c17cd90b8e059bcd179c4",
+              measurementId: "G-3R8JYX8T76"
+            };
+            // -----------------------------------------------------------
+
+            // --- GLOBAL CONSTANTS ---
+            const appId = 'formweaver-3d973'; // Your Project ID
+            const CLIENT_LICENSE_PATH = `/artifacts/${appId}/public/data/licenses`;
+            const FORM_DEFINITIONS_PATH = `/artifacts/${appId}/public/data/form_definitions`;
+            const SHEET_ID = '1HHzloz2mXo9CzY6PSYDQCVpPSBkWWRXIRQiAWNmPars9Ec'; // Your Sheet ID
+            
+            // --- YOUR API KEY (PRE-INSTALLED) ---
+            const API_KEY = 'AIzaSyCi0txEyx_9M593qNiKYEuhYQCyHXj8yZQ'; 
+
+            let db, auth;
+            let currentUID = null;
+            const provider = new GoogleAuthProvider();
+            let isHandlingRedirect = false; // Flag to prevent redirect loop
+
+            // --- UTILITY FUNCTIONS ---
+            function log(message, isError = false) {
+                const statusElement = document.getElementById('auth-status');
+                const logMessage = isError ? `[ERROR] ${message}` : `[LOG] ${message}`;
+                console.log(logMessage);
+                if (statusElement) {
+                    statusElement.textContent = logMessage;
+                    statusElement.classList.remove('text-gray-600', 'text-fv-error');
+                    statusElement.classList.add(isError ? 'text-fv-error' : 'text-fv-primary');
+                }
+            }
+            
+            function showMessage(elementId, message, isError = false) {
+                 const el = document.getElementById(elementId);
+                 if (!el) return;
+                 el.textContent = message;
+                 el.classList.remove('hidden', 'text-fv-error', 'text-fv-success');
+                 if (isError) {
+                     el.classList.add('text-fv-error');
+                 } else {
+                     el.classList.add('text-fv-success');
+                 }
+                 
+                 // Clear message after 3 seconds
+                 setTimeout(() => {
+                    if (el.textContent === message) {
+                        el.textContent = '\u00A0'; // non-breaking space for height
+                    }
+                 }, 3000);
+            }
+
+            // --- LICENSE CHECK AND SETUP ---
+            async function checkLicense(uid) {
+                if (!db) { log("Database not initialized.", true); return null; }
+                const docRef = doc(db, CLIENT_LICENSE_PATH, uid);
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    let status = "INACTIVE";
+                    let expires = data.expires_at || "Permanent";
+
+                    if (data.license_active === true) {
+                        // Check if expires is a string 'Permanent' or a valid date in the future
+                        if (expires === "Permanent" || (new Date(expires) && new Date(expires).getTime() > Date.now())) {
+                            status = "ACTIVE";
+                        } else {
+                            status = "EXPIRED";
+                        }
+                    }
+                    return { status, role: data.role || "User", expires };
+                }
+                return { status: "NOT FOUND", role: "None", expires: "N/A" };
+            }
+
+            function updateAdminUI(license) {
+                const statusBadge = document.getElementById('status-badge');
+                const adminPanel = document.getElementById('admin-panel');
+                const expiryDate = document.getElementById('expiry-date');
+
+                statusBadge.textContent = license.status;
+                expiryDate.textContent = license.expires;
+                document.getElementById('uid-display').textContent = currentUID;
+
+                statusBadge.className = 'font-bold px-2 py-1 rounded-full text-white';
+                if (license.status === 'ACTIVE' && license.role === 'admin') {
+                    statusBadge.classList.add('bg-fv-success');
+                    adminPanel.classList.remove('hidden');
+                } else {
+                    statusBadge.classList.add(license.status === 'EXPIRED' ? 'bg-fv-error' : 'bg-gray-500');
+                    showMessage('admin-message', "Access Denied: You do not have an active admin license.", true);
+                }
+            }
+
+            // --- DATE CALCULATION AND MANAGEMENT ---
+            function calculateExpirationDate(type) {
+                const today = new Date();
+                if (type === 'permanent') return 'Permanent';
+                
+                if (type === 'monthly' || type === 'upgrade') {
+                    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0); // Last day of current month
+                    return lastDay.toISOString().split('T')[0];
+                }
+                
+                if (type === 'trial') {
+                    const expiryDate = new Date(today);
+                    expiryDate.setDate(today.getDate() + 2); // 2 days from now
+                    return expiryDate.toISOString().split('T')[0];
+                }
+                return new Date(0).toISOString().split('T')[0]; // Default to expired
+            }
+
+            window.grantAccess = async function() {
+                const email = document.getElementById('target-email').value;
+                const accessType = document.getElementById('access-type').value;
+                if (!email) { 
+                    showMessage('admin-message', "Please enter an email address.", true);
+                    return; 
+                }
+
+                try {
+                    let expiryDate;
+                    if (accessType === 'revoke') {
+                        expiryDate = new Date(0).toISOString().split('T')[0]; // Expired date
+                    } else {
+                        expiryDate = calculateExpirationDate(accessType);
+                    }
+                    
+                    // NOTE: This MOCKS the Google Sheet update.
+                    // You must manually add/update the user in your Google Sheet:
+                    // ID: 1HHzloz2mXo9CzY6PSYDQCVpPSBkWWRXIRQiAWNmPars9Ec
+                    // Sheet Name: AllowedUsers
+                    // Column A: Email, Column B: Expiration Date (YYYY-MM-DD or 'Permanent')
+                    
+                    log(`MOCK UPDATE: Please manually update Sheet for ${email} with expiration ${expiryDate}`);
+                    showMessage('admin-message', `MOCK: Manually update Sheet for ${email} -> ${expiryDate}`, false);
+                    document.getElementById('target-email').value = '';
+
+                } catch (error) {
+                    log(`Error granting access: ${error.message}`, true);
+                    showMessage('admin-message', `Error: ${error.message}`, true);
+                }
+            }
+
+            // --- FORM DEFINITION ---
+            window.saveFormDefinition = async function() {
+                const formNameInput = document.getElementById('form-name');
+                const fieldsString = document.getElementById('form-fields').value;
+                const statusEl = document.getElementById('form-save-status');
+
+                const formName = formNameInput.value.replace(/\s/g, '_'); // Replace spaces with underscores for ID
+                const fields = fieldsString.split(',').map(f => f.trim()).filter(f => f.length > 0);
+                
+                if (!formName || fields.length === 0) {
+                    statusEl.textContent = "Form name or fields cannot be empty.";
+                    return;
+                }
+
+                const fieldsSchema = fields.map(field => ({ name: field.replace(/\s/g, '_'), type: "text", label: field }));
+                
+                try {
+                    const docRef = doc(db, FORM_DEFINITIONS_PATH, formName);
+                    await setDoc(docRef, {
+                        name: formNameInput.value, // Store the friendly name
+                        fields: fieldsSchema,
+                        last_updated: Timestamp.now()
+                    });
+                    statusEl.textContent = `Form definition '${formNameInput.value}' saved to Firebase successfully.`;
+                    log(`Form definition saved: ${formName}`);
+                } catch (error) {
+                    log(`Error saving form definition: ${error.message}`, true);
+                    statusEl.textContent = `Error saving form: ${error.message}`;
+                }
+            }
+            
+            // --- LINK GENERATION & COPY (FIXED - NO SUBFOLDER) ---
+            function generateClientLink(uid, formName) {
+                // This is the CORRECT line. It assumes index.html is at the root.
+                const baseUrl = window.location.origin + window.location.pathname.replace('index.html', '');
+                
+                const link = `${baseUrl}client-form.html?formId=${formName}`;
+                
+                const linkEl = document.getElementById('client-link');
+                linkEl.href = link;
+                linkEl.textContent = link;
+                log(`Unique Client Access Link Generated: ${link}`);
+            }
+
+            window.copyLink = function() {
+                const link = document.getElementById('client-link').href;
+                try {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = link;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    showMessage('admin-message', "Client link copied to clipboard!", false);
+                } catch (err) {
+                    log('Failed to copy link. Please copy manually.', true);
+                }
+            }
+
+            // --- RUN INITIALIZATION (*** UPDATED WITH REDIRECT LOOP FIX ***) ---
+            async function initializeAppCore() {
+                try {
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    
+                    isHandlingRedirect = true; // Set flag to true before checking
+                    
+                    // 1. Check for redirect result first
+                    log("Checking for login redirect...");
+                    const result = await getRedirectResult(auth);
+                    
+                    isHandlingRedirect = false; // Set flag to false after checking
+                    
+                    if (result) {
+                        // This block runs if we just came BACK from Google
+                        log("Handling redirect sign-in...");
+                        const user = result.user;
+                        currentUID = user.uid;
+                        log(`Authentication successful. User: ${user.email || user.uid}`);
+                        const license = await checkLicense(currentUID);
+                        updateAdminUI(license);
+                        
+                        if (license.status === 'ACTIVE' && license.role === 'admin') {
+                            generateClientLink(currentUID, 'Client_Contact_Info');
+                            await saveFormDefinition(); 
+                        }
+                        return; // Stop here, onAuthStateChanged will also fire
+                    }
+
+                    // 2. Set up the normal listener
+                    onAuthStateChanged(auth, async (user) => {
+                        if (isHandlingRedirect) return; // Do nothing if we are in the middle of a redirect
+
+                        if (user) {
+                            // This block runs if user was *already* signed in
+                            if (currentUID) return; // Prevent re-running if redirect handler already ran
+
+                            currentUID = user.uid;
+                            log(`Authentication successful. User: ${user.email || user.uid}`);
+                            const license = await checkLicense(currentUID);
+                            updateAdminUI(license);
+                            
+                            if (license.status === 'ACTIVE' && license.role === 'admin') {
+                                generateClientLink(currentUID, 'Client_Contact_Info');
+                                await saveFormDefinition(); 
+                            }
+                        } else {
+                            // No user, and no redirect result. This is a *new* visit.
+                            log("No user signed in. Redirecting to Google Sign-in...");
+                            signInWithRedirect(auth, provider); // <-- THE FIX
+                        }
+                    });
+
+                } catch (error) {
+                    log(`Critical Initialization Error: ${error.message}`, true);
+                }
+            }
+            
+            initializeAppCore();
+        </script>
+    </div>
+</body>
+</html>
